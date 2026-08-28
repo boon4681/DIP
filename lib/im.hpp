@@ -106,7 +106,15 @@ public:
         {
             fwrite(colorTable, sizeof(unsigned char), BMP_COLOR_TABLE_SIZE, fo);
         }
-        fwrite(data.data(), sizeof(unsigned char), height * width * (bitDepth / BYTE), fo);
+        unsigned char pad[3] = {0, 0, 0};
+        for (int y = 0; y < height; y++)
+        {
+            fwrite(data.data() + (size_t)y * rowSize, sizeof(unsigned char), rowSize, fo);
+            if (paddingSize > 0)
+            {
+                fwrite(pad, sizeof(unsigned char), paddingSize, fo);
+            }
+        }
         std::cout << "Image " << filename << " has been written!" << std::endl;
         fclose(fo);
         return true;
@@ -460,6 +468,33 @@ public:
         }
     }
 
+    void adjustGamma(double gamma)
+    {
+        double c = 255.0;
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                int color = getRGB(x, y);
+                int r = (color >> 16) & 0xff;
+                int g = (color >> 8) & 0xff;
+                int b = color & 0xff;
+
+                r = (int)round(c * pow(r / c, gamma));
+                r = r > 255 ? 255 : r;
+                r = r < 0 ? 0 : r;
+                g = (int)round(c * pow(g / c, gamma));
+                g = g > 255 ? 255 : g;
+                g = g < 0 ? 0 : g;
+                b = (int)round(c * pow(b / c, gamma));
+                b = b > 255 ? 255 : b;
+                b = b < 0 ? 0 : b;
+                color = (r << 16) | (g << 8) | b;
+                setRGB(x, y, color);
+            }
+        }
+    }
+
     void averagingFilter(int size)
     {
         if (size % 2 == 0)
@@ -510,6 +545,31 @@ public:
             }
         }
         delete[] tempBuf;
+    }
+
+    void unsharpMasking(int size, double k)
+    {
+        if (size % 2 == 0)
+        {
+            std::cout << "Size Invalid: must be odd number!" << std::endl;
+            return;
+        }
+        std::vector<unsigned char> original = data;
+        averagingFilter(size);
+        int bytePerPixel = bitDepth / BYTE;
+        for (size_t i = 0; i < data.size(); i += bytePerPixel)
+        {
+            for (int c = 0; c < bytePerPixel; c++)
+            {
+                int orig = original[i + c];
+                int blurred = data[i + c];
+                int mask = orig - blurred;
+                int val = orig + (int)round(k * mask);
+                val = val > 255 ? 255 : val;
+                val = val < 0 ? 0 : val;
+                data[i + c] = (unsigned char)val;
+            }
+        }
     }
 
     void medianFilter(int size)
