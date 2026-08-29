@@ -1,8 +1,8 @@
 // include script to load as a bullet
 // #include "./lab2/main.cpp"
 // #include "./lab3/main.cpp"
-#include "./lab4/main.cpp"
-// #include "./lab5/main.cpp"
+// #include "./lab4/main.cpp"
+#include "./lab5/main.cpp"
 // #include "./lab6/main.cpp"
 // #include "./lab7/main.cpp"
 // #include "./lab8/main.cpp"
