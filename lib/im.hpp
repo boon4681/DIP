@@ -15,6 +15,34 @@ class FD;
 #define BMP_COLOR_TABLE_SIZE 1024
 #define BMP_HEADER_SIZE 54
 
+#include <list>
+#include <vector>
+struct Point
+{
+    int x;
+    int y;
+    bool operator==(const Point &rhs) const
+    {
+        return x == rhs.x && y == rhs.y;
+    }
+};
+struct StructuringElement
+{
+    std::vector<int> elements;
+    struct Point origin;
+    std::list<struct Point> ignoreElements;
+    int width;
+    int height;
+    StructuringElement(int w, int h, struct Point o)
+    {
+        width = w;
+        height = h;
+        origin.x = o.x;
+        origin.y = o.y;
+        elements.resize(width * height);
+    }
+};
+
 class ImBMP
 {
 public:
@@ -252,6 +280,22 @@ public:
         return color;
     }
 
+    ImBMP operator-(ImBMP &other)
+    {
+        ImBMP result = *this;
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                int a = getRGB(x, y) & 0xff;
+                int b = other.getRGB(x, y) & 0xff;
+                int val = (a == 255 && b == 0) ? 255 : 0;
+                result.setRGB(x, y, (val << 16) | (val << 8) | val);
+            }
+        }
+        return result;
+    }
+
     void setRGB(int x, int y, int color)
     {
         int r = (color >> 16) & 0xff;
@@ -311,6 +355,115 @@ public:
                 setRGB(x, y, color);
             }
         }
+    }
+
+    void erode(const StructuringElement &se)
+    {
+        convertToGrayscale();
+        int *tempBuf = new int[height * width];
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                bool isEroded = true;
+                for (int seY = 0; seY < se.height; seY++)
+                {
+                    for (int seX = 0; seX < se.width; seX++)
+                    {
+                        struct Point checkingPoint;
+                        checkingPoint.x = seX;
+                        checkingPoint.y = seY;
+                        if (std::find(se.ignoreElements.begin(), se.ignoreElements.end(), checkingPoint)
+
+                                != se.ignoreElements.end() ||
+                            se.elements[seY * se.width + seX] != 255)
+
+                            continue;
+                        int imageX = x + seX - se.origin.x;
+                        int imageY = y + seY - se.origin.y;
+                        if (imageX < 0 || imageX >= width ||
+                            imageY < 0 || imageY >= height)
+                        {
+                            isEroded = false;
+                            goto se_check;
+                        }
+                        int color = getRGB(imageX, imageY);
+                        int gray = color & 0xff;
+                        if (gray != 255)
+                        {
+                            isEroded = false;
+                            goto se_check;
+                        }
+                    }
+                }
+            se_check:
+                int newGray = isEroded ? 255 : 0;
+                int newColor = (newGray << 16) | (newGray << 8) | newGray;
+                tempBuf[y * width + x] = newColor;
+            }
+        }
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                setRGB(x, y, tempBuf[y * width + x]);
+            }
+        }
+        delete[] tempBuf;
+    }
+
+    void dilate(const StructuringElement &se)
+    {
+        convertToGrayscale();
+        int *tempBuf = new int[height * width];
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                bool isDilated = false;
+                for (int seY = 0; seY < se.height; seY++)
+                {
+                    for (int seX = 0; seX < se.width; seX++)
+                    {
+                        struct Point checkingPoint;
+                        checkingPoint.x = seX;
+                        checkingPoint.y = seY;
+                        if (std::find(se.ignoreElements.begin(), se.ignoreElements.end(), checkingPoint)
+
+                                != se.ignoreElements.end() ||
+                            se.elements[seY * se.width + seX] != 255)
+
+                            continue;
+                        int imageX = x + seX - se.origin.x;
+                        int imageY = y + seY - se.origin.y;
+                        if (imageX < 0 || imageX >= width ||
+                            imageY < 0 || imageY >= height)
+                        {
+                            continue;
+                        }
+                        int color = getRGB(imageX, imageY);
+                        int gray = color & 0xff;
+                        if (gray == 255)
+                        {
+                            isDilated = true;
+                            goto se_check;
+                        }
+                    }
+                }
+            se_check:
+                int newGray = isDilated ? 255 : 0;
+                int newColor = (newGray << 16) | (newGray << 8) | newGray;
+                tempBuf[y * width + x] = newColor;
+            }
+        }
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                setRGB(x, y, tempBuf[y * width + x]);
+            }
+        }
+        delete[] tempBuf;
     }
 
     void convertToGrayscale()
@@ -808,6 +961,605 @@ public:
         delete[] tempBuf;
     }
 
+    void thresholding(int threshold)
+    {
+        convertToGrayscale();
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                int color = getRGB(x, y);
+                int gray = color & 0xff;
+                gray = gray < threshold ? 0 : 255;
+                color = (gray << 16) | (gray << 8) | gray;
+                setRGB(x, y, color);
+            }
+        }
+    }
+
+    void otsuThreshold()
+    {
+        convertToGrayscale();
+        int *histogram = new int[256];
+        float *histogramNorm = new float[256];
+        float *histogramCS = new float[256];
+        float *histogramMean = new float[256];
+        for (int i = 0; i < 256; i++)
+        {
+            histogram[i] = 0;
+        }
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                int color = getRGB(x, y);
+                int gray = color & 0xff;
+                histogram[gray]++;
+            }
+        }
+        float pixelNum = width * height;
+        for (int i = 0; i < 256; i++)
+        {
+            histogramNorm[i] = histogram[i] / pixelNum;
+        }
+        for (int i = 0; i < 256; i++)
+        {
+            if (i == 0)
+            {
+                histogramCS[i] = histogramNorm[i];
+                histogramMean[i] = 0;
+            }
+            else
+            {
+                histogramCS[i] = histogramCS[i - 1] + histogramNorm[i];
+                histogramMean[i] = histogramMean[i - 1] + histogramNorm[i] * i;
+            }
+        }
+        float globalMean = histogramMean[255];
+        float max = 0;
+        float maxVariance = -1;
+        int countMax = 0;
+        for (int i = 0; i < 256; i++)
+        {
+            if (histogramCS[i] <= 0 || histogramCS[i] >= 1)
+            {
+                continue;
+            }
+            float variance = (float)pow(
+                                 globalMean * histogramCS[i] - histogramMean[i], 2) /
+                             (histogramCS[i] * (1 - histogramCS[i]));
+            if (variance > maxVariance)
+            {
+                maxVariance = variance;
+                max = i;
+                countMax = 1;
+            }
+            else if (variance == maxVariance)
+            {
+                countMax++;
+                max = ((max * (countMax - 1)) + i) / countMax;
+            }
+        }
+        int threshold = (int)round(max);
+        std::cout << "Otsu threshold = " << threshold << std::endl;
+        delete[] histogram;
+        delete[] histogramNorm;
+        delete[] histogramCS;
+        delete[] histogramMean;
+        thresholding(threshold);
+    }
+
+    void linearSpatialFilter(double *kernel, int size)
+    {
+        if (size % 2 == 0)
+        {
+            std::cout << "Size Invalid: must be odd number!" << std::endl;
+            return;
+        }
+        int *tempBuf = new int[height * width];
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                double sumRed = 0, sumGreen = 0, sumBlue = 0;
+                for (int i = y - size / 2; i <= y + size / 2; i++)
+                {
+                    for (int j = x - size / 2; j <= x + size / 2; j++)
+                    {
+                        if (i >= 0 && i < height && j >= 0 && j < width)
+                        {
+                            int color = getRGB(j, i);
+                            int r = (color >> 16) & 0xff;
+                            int g = (color >> 8) & 0xff;
+                            int b = color & 0xff;
+                            int kernelIndex = (i - (y - size / 2)) * size + (j - (x - size / 2));
+                            sumRed += r * kernel[kernelIndex];
+                            sumGreen += g * kernel[kernelIndex];
+                            sumBlue += b * kernel[kernelIndex];
+                        }
+                    }
+                }
+                sumRed = sumRed > 255 ? 255 : sumRed;
+                sumRed = sumRed < 0 ? 0 : sumRed;
+                sumGreen = sumGreen > 255 ? 255 : sumGreen;
+                sumGreen = sumGreen < 0 ? 0 : sumGreen;
+                sumBlue = sumBlue > 255 ? 255 : sumBlue;
+                sumBlue = sumBlue < 0 ? 0 : sumBlue;
+                int newColor = ((int)sumRed << 16) | ((int)sumGreen << 8) | (int)sumBlue;
+                tempBuf[y * width + x] = newColor;
+            }
+        }
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                setRGB(x, y, tempBuf[y * width + x]);
+            }
+        }
+        delete[] tempBuf;
+    }
+
+    void cannyEdgeDetector(int lower, int upper)
+    {
+        // Step 1 - Apply 5 x 5 Gaussian filter
+        double gaussian[25] = {2.0 / 159.0, 4.0 / 159.0, 5.0 / 159.0, 4.0 / 159.0, 2.0 / 159.0,
+                               4.0 / 159.0, 9.0 / 159.0, 12.0 / 159.0, 9.0 / 159.0, 4.0 / 159.0,
+                               5.0 / 159.0, 12.0 / 159.0, 15.0 / 159.0, 12.0 / 159.0, 5.0 / 159.0,
+                               4.0 / 159.0, 9.0 / 159.0, 12.0 / 159.0, 9.0 / 159.0, 4.0 / 159.0,
+                               2.0 / 159.0, 4.0 / 159.0, 5.0 / 159.0, 4.0 / 159.0, 2.0 / 159.0};
+
+        linearSpatialFilter(gaussian, 5);
+        convertToGrayscale();
+
+        // Step 2 - Find intensity gradient
+        double sobelX[9] =
+            {1, 0, -1,
+             2, 0, -2,
+             1, 0, -1};
+        double sobelY[9] =
+            {1, 2, 1,
+             0, 0, 0,
+             -1, -2, -1};
+        double *magnitude = new double[height * width]();
+        double *direction = new double[height * width]();
+        for (int y = 1; y < height - 1; y++)
+        {
+            for (int x = 1; x < width - 1; x++)
+            {
+                double gx = 0, gy = 0;
+                for (int i = y - 1; i <= y + 1; i++)
+                {
+                    for (int j = x - 1; j <= x + 1; j++)
+                    {
+                        int color = getRGB(j, i);
+                        int gray = color & 0xff;
+                        int kernelIndex = (i - (y - 1)) * 3 + (j - (x - 1));
+                        gx += gray * sobelX[kernelIndex];
+                        gy += gray * sobelY[kernelIndex];
+                    }
+                }
+                magnitude[y * width + x] = sqrt(gx * gx + gy * gy);
+                direction[y * width + x] = atan2(gy, gx) * 180 / 3.141592653589793;
+            }
+        }
+        // Step 3 - Nonmaxima Suppression
+        double *gn = new double[height * width]();
+        double maxMagnitude = 0;
+        for (int y = 1; y < height - 1; y++)
+        {
+            for (int x = 1; x < width - 1; x++)
+            {
+                int targetX = 0, targetY = 0;
+                // find closest direction
+                if (direction[y * width + x] <= -157.5)
+                {
+                    targetX = 1;
+                    targetY = 0;
+                }
+                else if (direction[y * width + x] <= -112.5)
+                {
+                    targetX = 1;
+                    targetY = -1;
+                }
+                else if (direction[y * width + x] <= -67.5)
+                {
+                    targetX = 0;
+                    targetY = 1;
+                }
+                else if (direction[y * width + x] <= -22.5)
+                {
+                    targetX = 1;
+                    targetY = 1;
+                }
+                else if (direction[y * width + x] <= 22.5)
+                {
+                    targetX = 1;
+                    targetY = 0;
+                }
+                else if (direction[y * width + x] <= 67.5)
+                {
+                    targetX = 1;
+                    targetY = -1;
+                }
+                else if (direction[y * width + x] <= 112.5)
+                {
+                    targetX = 0;
+                    targetY = 1;
+                }
+                else if (direction[y * width + x] <= 157.5)
+                {
+                    targetX = 1;
+                    targetY = 1;
+                }
+                else
+                {
+                    targetX = 1;
+                    targetY = 0;
+                }
+                double current = magnitude[y * width + x];
+                double next = magnitude[(y + targetY) * width + (x + targetX)];
+                double previous = magnitude[(y - targetY) * width + (x - targetX)];
+                if (current < next || current < previous)
+                {
+                    gn[y * width + x] = 0;
+                }
+                else
+                {
+                    gn[y * width + x] = current;
+                }
+                if (gn[y * width + x] > maxMagnitude)
+                {
+                    maxMagnitude = gn[y * width + x];
+                }
+            }
+        }
+        // Step 4 - Hysteresis Thresholding
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                int newGray = 0;
+                if (maxMagnitude > 0)
+                {
+                    newGray = (int)round(
+                        gn[y * width + x] * 255.0 / maxMagnitude);
+                }
+                int newColor = (newGray << 16) | (newGray << 8) | newGray;
+                setRGB(x, y, newColor);
+            }
+        }
+        // upper threshold checking with recursive
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                int checking = getRGB(x, y) & 0xff;
+                if (checking >= upper)
+                {
+                    int newColor = (255 << 16) | (255 << 8) | 255;
+                    setRGB(x, y, newColor);
+                    hystConnect(x, y, lower);
+                }
+            }
+        }
+        // clear unwanted values
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                int checking = getRGB(x, y) & 0xff;
+                if (checking != 255)
+                {
+                    setRGB(x, y, 0);
+                }
+            }
+        }
+        delete[] magnitude;
+        delete[] direction;
+        delete[] gn;
+    }
+
+    void hystConnect(int x, int y, int threshold)
+    {
+        for (int i = y - 1; i <= y + 1; i++)
+        {
+            for (int j = x - 1; j <= x + 1; j++)
+            {
+                if (j < width && i < height && j >= 0 && i >= 0 && !(j == x && i == y))
+                {
+                    int value = getRGB(j, i) & 0xff;
+                    if (value != 255)
+                    {
+                        if (value >= threshold)
+                        {
+                            int newColor = (255 << 16) | (255 << 8) | 255;
+                            setRGB(j, i, newColor);
+                            hystConnect(j, i, threshold);
+                        }
+                        else
+                        {
+                            setRGB(j, i, 0);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    void houghTransform(double percent, const std::string &houghArrayPath = "")
+    {
+        if (percent <= 0 || percent > 1)
+        {
+            std::cout << "Percent must be greater than 0 and not greater than 1." << std::endl;
+            return;
+        }
+        // The image should be converted to a binary edge map first
+        // Work out how the Hough space is quantized
+        int numOfTheta = 180;
+        double thetaStep = M_PI / numOfTheta;
+        int highestR = (int)round(std::max(width, height) * sqrt(2));
+        int centreX = width / 2;
+        int centreY = height / 2;
+        std::cout << "Hough array w: " << numOfTheta
+                  << " height: " << 2 * highestR << std::endl;
+        double *cosTheta = new double[numOfTheta];
+        double *sinTheta = new double[numOfTheta];
+        for (int i = 0; i < numOfTheta; i++)
+        {
+            cosTheta[i] = cos(i * thetaStep);
+            sinTheta[i] = sin(i * thetaStep);
+        }
+        // Create the Hough array and initialize to zero
+        int **houghArray = new int *[numOfTheta];
+        for (int i = 0; i < numOfTheta; i++)
+        {
+            houghArray[i] = new int[2 * highestR];
+            for (int j = 0; j < 2 * highestR; j++)
+            {
+                houghArray[i][j] = 0;
+            }
+        }
+        // Step 1 - find each white edge pixel
+        // Step 2 - apply the line equation and vote in the array
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                int pointColor = getRGB(x, y) & 0xff;
+                if (pointColor == 255)
+                {
+                    for (int i = 0; i < numOfTheta; i++)
+                    {
+                        int r = (int)round(
+                            (x - centreX) * cosTheta[i] + (y - centreY) * sinTheta[i]);
+                        r = r + highestR;
+                        if (r < 0 || r >= 2 * highestR)
+                        {
+                            continue;
+                        }
+                        houghArray[i][r]++;
+                    }
+                }
+            }
+        }
+        // Step 3 - find the maximum vote
+        int maxHough = 0;
+        for (int i = 0; i < numOfTheta; i++)
+        {
+            for (int j = 0; j < 2 * highestR; j++)
+            {
+                if (houghArray[i][j] > maxHough)
+                {
+                    maxHough = houghArray[i][j];
+                }
+            }
+        }
+        if (maxHough == 0)
+        {
+            std::cout << "No edge pixels found." << std::endl;
+            for (int i = 0; i < numOfTheta; i++)
+            {
+                delete[] houghArray[i];
+            }
+            delete[] houghArray;
+            delete[] cosTheta;
+            delete[] sinTheta;
+            return;
+        }
+        // Write the normalized Hough array for demonstration
+        int oldWidth = width;
+        int oldHeight = height;
+        int bytesPerPixel = bitDepth / BYTE;
+        int oldSize = oldWidth * oldHeight * bytesPerPixel;
+        unsigned char *edgeMap = new unsigned char[oldSize];
+        for (int i = 0; i < oldSize; i++)
+        {
+            edgeMap[i] = data[i];
+        }
+        data.clear();
+        width = numOfTheta;
+        height = 2 * highestR;
+        data.resize(width * height * bytesPerPixel);
+        for (int i = 0; i < width * height * bytesPerPixel; i++)
+        {
+            data[i] = 0;
+        }
+        for (int j = 0; j < 2 * highestR; j++)
+        {
+            for (int i = 0; i < numOfTheta; i++)
+            {
+                int gray = (int)round(
+                    houghArray[i][j] * 255.0 / maxHough);
+                int color = (gray << 16) | (gray << 8) | gray;
+                setRGB(i, j, color);
+            }
+        }
+        if (!houghArrayPath.empty())
+        {
+            write(houghArrayPath);
+        }
+        width = oldWidth;
+        height = oldHeight;
+        data.assign(edgeMap, edgeMap + oldSize);
+        delete[] edgeMap;
+        // The threshold is a proportion of the maximum vote
+        int threshold = (int)round(percent * maxHough);
+        threshold = threshold < 1 ? 1 : threshold;
+        std::cout << "Maximum vote = " << maxHough << std::endl;
+        std::cout << "Hough threshold = " << threshold << std::endl;
+        // Step 4 - search for local peaks and draw complete lines
+        for (int i = 0; i < numOfTheta; i++)
+        {
+            for (int j = 0; j < 2 * highestR; j++)
+            {
+                if (houghArray[i][j] >= threshold)
+                {
+                    bool draw = true;
+                    int peak = houghArray[i][j];
+                    for (int k = -4; k <= 4; k++)
+                    {
+                        for (int l = -4; l <= 4; l++)
+                        {
+                            if (k == 0 && l == 0)
+                            {
+                                continue;
+                            }
+                            int testTheta = i + k;
+                            int testOffset = j + l;
+                            if (testTheta < 0 || testTheta >= numOfTheta || testOffset < 0 || testOffset >= 2 * highestR)
+                            {
+                                continue;
+                            }
+                            int testPeak =
+                                houghArray[testTheta][testOffset];
+                            if (testPeak > peak || (testPeak == peak && (testTheta < i || (testTheta == i && testOffset < j))))
+                            {
+                                draw = false;
+                                break;
+                            }
+                        }
+                        if (!draw)
+                        {
+                            break;
+                        }
+                    }
+                    if (!draw)
+                    {
+                        continue;
+                    }
+                    double tsin = sinTheta[i];
+                    double tcos = cosTheta[i];
+                    if (i <= numOfTheta / 4 || i >= (3 * numOfTheta) / 4)
+                    {
+                        for (int y = 0; y < height; y++)
+                        {
+                            int x = (int)round(
+                                ((j - highestR) - (y - centreY) * tsin) / tcos + centreX);
+                            if (x >= 0 && x < width)
+                            {
+                                int redColor = (255 << 16);
+                                setRGB(x, y, redColor);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        for (int x = 0; x < width; x++)
+                        {
+                            int y = (int)round(
+                                ((j - highestR) - (x - centreX) * tcos) / tsin + centreY);
+                            if (y >= 0 && y < height)
+                            {
+                                int redColor = (255 << 16);
+                                setRGB(x, y, redColor);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (int i = 0; i < numOfTheta; i++)
+        {
+            delete[] houghArray[i];
+        }
+        delete[] houghArray;
+        delete[] cosTheta;
+        delete[] sinTheta;
+    }
+
+    void regionGrowing(int seedX, int seedY, int threshold, bool useEightConnectivity)
+    {
+        if (seedX < 0 || seedX >= width || seedY < 0 || seedY >= height || threshold < 0)
+        {
+            std::cout << "Region growing parameters invalid!" << std::endl;
+            return;
+        }
+        convertToGrayscale();
+        int pixelNum = width * height;
+        int *source = new int[pixelNum];
+        bool *visited = new bool[pixelNum];
+        Point *queue = new Point[pixelNum];
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                int index = y * width + x;
+                source[index] = getRGB(x, y) & 0xff;
+                visited[index] = false;
+                setRGB(x, y, 0);
+            }
+        }
+        int internalSeedY = height - seedY - 1;
+        int seedGray = source[internalSeedY * width + seedX];
+        int first = 0;
+        int last = 0;
+        queue[last].x = seedX;
+        queue[last].y = internalSeedY;
+        last++;
+        visited[internalSeedY * width + seedX] = true;
+        while (first < last)
+        {
+            Point point = queue[first];
+            first++;
+            int white = (255 << 16) | (255 << 8) | 255;
+            setRGB(point.x, point.y, white);
+            for (int y = -1; y <= 1; y++)
+            {
+                for (int x = -1; x <= 1; x++)
+                {
+                    if (x == 0 && y == 0)
+                    {
+                        continue;
+                    }
+                    if (!useEightConnectivity && abs(x) + abs(y) != 1)
+                    {
+                        continue;
+                    }
+                    int newX = point.x + x;
+                    int newY = point.y + y;
+                    if (newX < 0 || newX >= width || newY < 0 || newY >= height)
+                    {
+                        continue;
+                    }
+                    int index = newY * width + newX;
+                    if (visited[index])
+                    {
+                        continue;
+                    }
+                    visited[index] = true;
+                    if (abs(source[index] - seedGray) <= threshold)
+                    {
+                        queue[last].x = newX;
+                        queue[last].y = newY;
+                        last++;
+                    }
+                }
+            }
+        }
+        delete[] source;
+        delete[] visited;
+        delete[] queue;
+    }
     void restore()
     {
         width = originalWidth;
